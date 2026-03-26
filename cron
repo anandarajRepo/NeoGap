@@ -1,0 +1,9 @@
+# NeoGap cron schedule (IST = UTC+5:30)
+# To install: crontab -e  and paste the two lines below
+# Replace /path/to/NeoGap with your actual project path
+
+# Start at 8:55 AM IST (= 3:25 AM UTC) on weekdays
+25 3 * * 1-5   /path/to/NeoGap/run_gap.sh >> /path/to/NeoGap/logs/cron.log 2>&1
+
+# Stop at 3:30 PM IST (= 10:00 AM UTC) on weekdays
+0 10 * * 1-5   /path/to/NeoGap/stop_gap.sh >> /path/to/NeoGap/logs/cron.log 2>&1
