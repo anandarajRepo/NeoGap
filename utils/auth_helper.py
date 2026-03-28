@@ -126,10 +126,11 @@ def _do_mpin_validate(
     access_token: str,
 ) -> tuple[str, str, str]:
     """POST /tradeApiValidate — returns (trading_token, trading_sid, base_url)."""
+    auth_header = access_token if access_token.startswith("Bearer ") else f"Bearer {access_token}"
     resp = requests.post(
         _VALIDATE_URL,
         headers={
-            "Authorization": access_token,
+            "Authorization": auth_header,
             "neo-fin-key": _NEO_FIN_KEY,
             "sid": view_sid,
             "Auth": view_token,
