@@ -32,7 +32,10 @@ def _int(key: str, default: int) -> int:
 class BrokerConfig:
     consumer_key: str = field(default_factory=lambda: os.getenv("NEO_CONSUMER_KEY", ""))
     consumer_secret: str = field(default_factory=lambda: os.getenv("NEO_CONSUMER_SECRET", ""))
+    # Developer API access token — used as Authorization header in auth requests
     access_token: str = field(default_factory=lambda: os.getenv("NEO_ACCESS_TOKEN", ""))
+    # 5-character client code (UCC) from the Kotak Neo developer portal
+    ucc: str = field(default_factory=lambda: os.getenv("NEO_UCC", ""))
     environment: str = field(default_factory=lambda: os.getenv("NEO_ENVIRONMENT", "prod"))
 
 
