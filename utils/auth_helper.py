@@ -159,13 +159,16 @@ def get_neo_client():
         ) from exc
 
     cfg = settings.broker
-    client = neo_api_client.NeoAPI(
-        consumer_key=cfg.consumer_key,
-        consumer_secret=cfg.consumer_secret,
-        environment=cfg.environment,
-        access_token=None,
-        neo_fin_key=None,
-    )
+    _all_kwargs = {
+        "consumer_key": cfg.consumer_key,
+        "consumer_secret": cfg.consumer_secret,
+        "environment": cfg.environment,
+        "access_token": None,
+        "neo_fin_key": None,
+    }
+    import inspect
+    _supported = inspect.signature(neo_api_client.NeoAPI.__init__).parameters
+    client = neo_api_client.NeoAPI(**{k: v for k, v in _all_kwargs.items() if k in _supported})
 
     cached = _load_cached_token()
     if cached:
