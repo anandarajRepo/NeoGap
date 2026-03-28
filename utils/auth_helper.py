@@ -82,23 +82,43 @@ def _save_token(trading_token: str, trading_sid: str, base_url: str) -> None:
 # Step 2a: TOTP login
 # ---------------------------------------------------------------------------
 
+_TRANSIENT_STATUS_CODES = {502, 503, 504}
+_MAX_TRANSIENT_RETRIES = 4
+
+
+def _post_with_retry(url: str, headers: dict, payload: dict, timeout: int = 30) -> requests.Response:
+    """POST with exponential-backoff retry for transient 5xx errors."""
+    delay = 2
+    for attempt in range(1, _MAX_TRANSIENT_RETRIES + 1):
+        resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
+        if resp.status_code not in _TRANSIENT_STATUS_CODES:
+            return resp
+        logger.warning(
+            "Transient HTTP %s from %s (attempt %d/%d) — retrying in %ds…",
+            resp.status_code, url, attempt, _MAX_TRANSIENT_RETRIES, delay,
+        )
+        if attempt < _MAX_TRANSIENT_RETRIES:
+            time.sleep(delay)
+            delay *= 2
+    return resp  # return last response so caller can raise_for_status
+
+
 def _do_totp_login(mobile: str, ucc: str, totp: str, access_token: str) -> tuple[str, str]:
     """POST /tradeApiLogin — returns (view_token, view_sid)."""
     # Kotak expects "Bearer <token>" — normalise in case the env var omits the prefix.
     auth_header = access_token if access_token.startswith("Bearer ") else f"Bearer {access_token}"
-    resp = requests.post(
+    resp = _post_with_retry(
         _LOGIN_URL,
         headers={
             "Authorization": auth_header,
             "neo-fin-key": _NEO_FIN_KEY,
             "Content-Type": "application/json",
         },
-        json={
+        payload={
             "mobileNumber": mobile,
             "ucc": ucc,
             "totp": totp,
         },
-        timeout=30,
     )
     if not resp.ok:
         # Surface the API error body before raising so the cause is visible in logs.
@@ -127,7 +147,7 @@ def _do_mpin_validate(
 ) -> tuple[str, str, str]:
     """POST /tradeApiValidate — returns (trading_token, trading_sid, base_url)."""
     auth_header = access_token if access_token.startswith("Bearer ") else f"Bearer {access_token}"
-    resp = requests.post(
+    resp = _post_with_retry(
         _VALIDATE_URL,
         headers={
             "Authorization": auth_header,
@@ -136,8 +156,7 @@ def _do_mpin_validate(
             "Auth": view_token,
             "Content-Type": "application/json",
         },
-        json={"mpin": mpin},
-        timeout=30,
+        payload={"mpin": mpin},
     )
     resp.raise_for_status()
     data = resp.json().get("data", {})
