@@ -84,10 +84,12 @@ def _save_token(trading_token: str, trading_sid: str, base_url: str) -> None:
 
 def _do_totp_login(mobile: str, ucc: str, totp: str, access_token: str) -> tuple[str, str]:
     """POST /tradeApiLogin — returns (view_token, view_sid)."""
+    # Kotak expects "Bearer <token>" — normalise in case the env var omits the prefix.
+    auth_header = access_token if access_token.startswith("Bearer ") else f"Bearer {access_token}"
     resp = requests.post(
         _LOGIN_URL,
         headers={
-            "Authorization": access_token,
+            "Authorization": auth_header,
             "neo-fin-key": _NEO_FIN_KEY,
             "Content-Type": "application/json",
         },
@@ -98,7 +100,14 @@ def _do_totp_login(mobile: str, ucc: str, totp: str, access_token: str) -> tuple
         },
         timeout=30,
     )
-    resp.raise_for_status()
+    if not resp.ok:
+        # Surface the API error body before raising so the cause is visible in logs.
+        try:
+            err_body = resp.json()
+        except Exception:
+            err_body = resp.text
+        logger.error("TOTP login HTTP %s — response: %s", resp.status_code, err_body)
+        resp.raise_for_status()
     data = resp.json().get("data", {})
     if data.get("status") != "success":
         raise RuntimeError(f"TOTP login failed: {data}")
@@ -187,11 +196,18 @@ def get_neo_client():
     if not ucc:
         ucc = input("5-character client code (UCC): ").strip()
 
-    totp = input("TOTP from authenticator app: ").strip()
-
-    # ── Step 2a: TOTP login ───────────────────────────────────────────────
-    logger.info("Step 2a: TOTP login…")
-    view_token, view_sid = _do_totp_login(mobile, ucc, totp, cfg.access_token)
+    # ── Step 2a: TOTP login (retry up to 3 times for expired codes) ──────
+    for _attempt in range(1, 4):
+        totp = input("TOTP from authenticator app: ").strip()
+        logger.info("Step 2a: TOTP login… (attempt %d)", _attempt)
+        try:
+            view_token, view_sid = _do_totp_login(mobile, ucc, totp, cfg.access_token)
+            break
+        except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 424 and _attempt < 3:
+                print("TOTP rejected (expired or invalid) — please enter the next code.")
+                continue
+            raise
 
     # ── Step 2b: MPIN validation ──────────────────────────────────────────
     if not mpin:
