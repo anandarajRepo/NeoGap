@@ -106,7 +106,7 @@ def _post_with_retry(url: str, headers: dict, payload: dict, timeout: int = 30) 
 def _do_totp_login(mobile: str, ucc: str, totp: str, access_token: str) -> tuple[str, str]:
     """POST /tradeApiLogin — returns (view_token, view_sid)."""
     # Kotak expects "Bearer <token>" — normalise in case the env var omits the prefix.
-    auth_header = access_token if access_token.startswith("Bearer ") else f"Bearer {access_token}"
+    auth_header = access_token if access_token.startswith("Bearer ") else f"{access_token}"
     resp = _post_with_retry(
         _LOGIN_URL,
         headers={
