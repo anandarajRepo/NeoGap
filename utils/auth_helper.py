@@ -149,7 +149,7 @@ def _do_mpin_validate(
 
     The API only accepts {"mpin": "..."} in the request body.
     """
-    auth_header = access_token if access_token.startswith("Bearer ") else f"Bearer {access_token}"
+    auth_header = access_token if access_token.startswith("Bearer ") else f"{access_token}"
     resp = _post_with_retry(
         _VALIDATE_URL,
         headers={
