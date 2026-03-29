@@ -40,7 +40,7 @@ def cmd_run() -> None:
     strategy = GapStrategy(client)
 
     logger.info(
-        "Starting NeoGap | DRY_RUN=%s | PORTFOLIO=₹%.0f | MAX_POS=%d",
+        "Starting NeoGap | DRY_RUN=%s | PORTFOLIO=RS.%.0f | MAX_POS=%d",
         settings.ops.dry_run,
         settings.risk.portfolio_value,
         settings.risk.max_positions,

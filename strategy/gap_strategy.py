@@ -568,6 +568,6 @@ class GapStrategy:
         logger.info("  Trades executed   : %d", m.total_trades)
         logger.info("  Win / Loss        : %d / %d", m.winning_trades, m.losing_trades)
         logger.info("  Win rate          : %.1f%%", m.win_rate * 100)
-        logger.info("  Cumulative P&L    : ₹%.2f", m.cumulative_pnl)
-        logger.info("  Max drawdown      : ₹%.2f", m.max_drawdown)
+        logger.info("  Cumulative P&L    : RS.%.2f", m.cumulative_pnl)
+        logger.info("  Max drawdown      : RS.%.2f", m.max_drawdown)
         logger.info("=" * 60)

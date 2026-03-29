@@ -99,7 +99,7 @@ NeoGap/
 
 | Parameter | Default | Description |
 |---|---|---|
-| `PORTFOLIO_VALUE` | ₹50,000 | Total allocated capital |
+| `PORTFOLIO_VALUE` | RS.50,000 | Total allocated capital |
 | `RISK_PER_TRADE` | 30% | Portion allocated per trade |
 | `MAX_POSITIONS` | 3 | Maximum simultaneous open positions |
 | `MAX_DAILY_LOSS_PCT` | 2% | Stop new entries if daily P&L drops below this |
