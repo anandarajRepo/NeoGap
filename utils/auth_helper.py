@@ -141,15 +141,13 @@ def _do_totp_login(mobile: str, ucc: str, totp: str, access_token: str) -> tuple
 
 def _do_mpin_validate(
     mpin: str,
-    mobile: str,
     view_token: str,
     view_sid: str,
     access_token: str,
 ) -> tuple[str, str, str]:
     """POST /tradeApiValidate — returns (trading_token, trading_sid, base_url).
 
-    The v1 API expects mobileNumber in the body alongside mpin; the v2 API
-    accepts mpin-only.  We send both so the request works against either version.
+    The API only accepts {"mpin": "..."} in the request body.
     """
     auth_header = access_token if access_token.startswith("Bearer ") else f"Bearer {access_token}"
     resp = _post_with_retry(
@@ -161,7 +159,7 @@ def _do_mpin_validate(
             "Auth": view_token,
             "Content-Type": "application/json",
         },
-        payload={"mobileNumber": mobile, "mpin": mpin},
+        payload={"mpin": mpin},
     )
     if not resp.ok:
         try:
@@ -247,7 +245,7 @@ def get_neo_client():
         logger.info("Step 2b: MPIN validation… (attempt %d)", _mpin_attempt)
         try:
             trading_token, trading_sid, base_url = _do_mpin_validate(
-                mpin, mobile, view_token, view_sid, cfg.access_token
+                mpin, view_token, view_sid, cfg.access_token
             )
             break
         except requests.HTTPError as exc:
