@@ -84,7 +84,6 @@ class NeoDataService:
                     "exchange_segment": scrip["exchange_segment"],
                 }],
                 quote_type="ohlc",
-                session_token=self._client.access_token,
             )
             # neo_api_client historical candles endpoint
             raw_bars = _retry(
@@ -133,7 +132,6 @@ class NeoDataService:
                     "exchange_segment": scrip["exchange_segment"],
                 }],
                 quote_type="ltp",
-                session_token=self._client.access_token,
             )
             if not resp:
                 return None
@@ -170,7 +168,6 @@ class NeoDataService:
                     self._client.quotes,
                     instrument_tokens=tokens,
                     quote_type="ltp",
-                    session_token=self._client.access_token,
                 )
                 raw_list = resp if isinstance(resp, list) else [resp] if resp else []
                 for item in raw_list:
