@@ -27,7 +27,10 @@ import asyncio
 import math
 from datetime import datetime
 from enum import Enum, auto
+from pathlib import Path
 from typing import Optional
+
+STOP_FLAG_FILE = Path(".neogap_stop")
 
 from config.settings import settings
 from config.symbols import get_all_symbols
@@ -112,6 +115,16 @@ class GapStrategy:
             return
 
         while True:
+            if STOP_FLAG_FILE.exists():
+                logger.info("Stop flag detected (%s) — initiating graceful shutdown…", STOP_FLAG_FILE)
+                STOP_FLAG_FILE.unlink(missing_ok=True)
+                if self._positions:
+                    logger.info("Closing %d open position(s) before exit…", len(self._positions))
+                    await self._closing_phase()
+                self._print_daily_summary()
+                logger.info("NeoGap stopped gracefully.")
+                return
+
             try:
                 await self._tick()
             except Exception as exc:

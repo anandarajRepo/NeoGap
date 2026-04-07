@@ -139,6 +139,9 @@ def _do_totp_login(mobile: str, ucc: str, totp: str, access_token: str) -> tuple
 # Step 2b: MPIN validation
 # ---------------------------------------------------------------------------
 
+_DEFAULT_BASE_URL = "https://gw-napi.kotaksecurities.com"
+
+
 def _do_mpin_validate(
     mpin: str,
     view_token: str,
@@ -171,8 +174,11 @@ def _do_mpin_validate(
     data = resp.json().get("data", {})
     if data.get("status") != "success":
         raise RuntimeError(f"MPIN validation failed: {data}")
+    base_url = data.get("baseUrl") or _DEFAULT_BASE_URL
+    if not data.get("baseUrl"):
+        logger.warning("baseUrl missing in MPIN response — using default: %s", base_url)
     logger.info("MPIN validation successful (kType=%s)", data.get("kType"))
-    return data["token"], data["sid"], data["baseUrl"]
+    return data["token"], data["sid"], base_url
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +218,9 @@ def get_neo_client():
     if cached:
         client.access_token = cached["trading_token"]
         client.sid = cached["trading_sid"]
-        client.base_url = cached["base_url"]
+        client.base_url = cached["base_url"] or _DEFAULT_BASE_URL
+        if not cached["base_url"]:
+            logger.warning("Cached base_url is None — using default: %s", _DEFAULT_BASE_URL)
         return client
 
     # ── Gather credentials ────────────────────────────────────────────────
