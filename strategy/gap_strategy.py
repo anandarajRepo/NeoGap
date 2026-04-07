@@ -35,6 +35,7 @@ STOP_FLAG_FILE = Path(".neogap_stop")
 from config.settings import settings
 from config.symbols import get_all_symbols
 from models.trading_models import (
+    DayOHLC,
     ExitReason,
     GapDirection,
     GapEvent,
@@ -50,6 +51,7 @@ from models.trading_models import (
 )
 from services.gap_detection_service import GapDetectionService
 from services.gap_trend_service import GapTrendService
+from services.prev_day_condition_service import PrevDayConditionService
 from services.market_timing_service import (
     is_end_of_day,
     is_gap_scan_window,
@@ -86,11 +88,13 @@ class GapStrategy:
         self._data_svc = NeoDataService(neo_client)
         self._gap_detect = GapDetectionService()
         self._gap_trend = GapTrendService()
+        self._prev_day_svc = PrevDayConditionService()
         self._order_mgr = OrderManager(neo_client)
 
         self._state = StrategyState.IDLE
         self._prev_closes: dict[str, float] = {}
         self._avg_volumes: dict[str, int] = {}
+        self._prev_day_bars: dict[str, DayOHLC] = {}   # full previous-day OHLC bar per symbol
         self._gap_events: list[GapEvent] = []
         self._gap_trends: dict[str, GapTrend] = {}
         self._pending_confirmation: list[GapEvent] = []  # awaiting mini-ORB confirm
@@ -170,32 +174,41 @@ class GapStrategy:
         logger.info("[PRE_OPEN] Fetching previous closes and 20-day avg volumes…")
         loop = asyncio.get_event_loop()
 
-        prev_closes, avg_volumes = await loop.run_in_executor(
+        prev_closes, avg_volumes, prev_day_bars = await loop.run_in_executor(
             None, self._fetch_pre_open_data
         )
         self._prev_closes = prev_closes
         self._avg_volumes = avg_volumes
+        self._prev_day_bars = prev_day_bars
         logger.info(
-            "[PRE_OPEN] Ready: %d symbols with prev_close data", len(prev_closes)
+            "[PRE_OPEN] Ready: %d symbols with prev_close data "
+            "(prev_day_condition filter: %s)",
+            len(prev_closes),
+            "ON" if self._prev_day_svc.is_enabled() else "OFF",
         )
         self._state = StrategyState.GAP_SCAN
 
-    def _fetch_pre_open_data(self) -> tuple[dict[str, float], dict[str, int]]:
+    def _fetch_pre_open_data(
+        self,
+    ) -> tuple[dict[str, float], dict[str, int], dict[str, DayOHLC]]:
         prev_closes: dict[str, float] = {}
         avg_volumes: dict[str, int] = {}
+        prev_day_bars: dict[str, DayOHLC] = {}
 
         for symbol in self._symbols:
             bars = self._data_svc.get_historical_ohlc(symbol, days=25)
             if len(bars) >= 2:
                 prev_closes[symbol] = bars[-2].close
+                prev_day_bars[symbol] = bars[-2]   # full OHLC bar for prev day condition
                 if len(bars) >= 20:
                     avg_volumes[symbol] = int(
                         sum(b.volume for b in bars[-20:]) / 20
                     )
             elif len(bars) == 1:
                 prev_closes[symbol] = bars[0].close
+                prev_day_bars[symbol] = bars[0]
 
-        return prev_closes, avg_volumes
+        return prev_closes, avg_volumes, prev_day_bars
 
     # ------------------------------------------------------------------
     # Phase 2: Gap scan — detect gaps at open
@@ -291,6 +304,26 @@ class GapStrategy:
                     trend.reversal_rate * 100,
                 )
                 continue
+
+            # ----------------------------------------------------------
+            # Previous day closing condition filter
+            # Bullish  (BUY) : volume surge + close near day high
+            # Bearish (SELL) : high volume + close fails to hold highs
+            # ----------------------------------------------------------
+            if self._prev_day_svc.is_enabled():
+                prev_bar = self._prev_day_bars.get(event.symbol)
+                avg_vol = self._avg_volumes.get(event.symbol, 0)
+                if prev_bar is None:
+                    logger.info(
+                        "%s: no prev-day bar available — skipping prev-day condition check",
+                        event.symbol,
+                    )
+                elif not self._prev_day_svc.check(event.symbol, prev_bar, avg_vol, direction):
+                    logger.info(
+                        "%s: dropped — prev-day closing condition not met for %s signal",
+                        event.symbol, direction.value,
+                    )
+                    continue
 
             entry_price, stop_loss, target_1, target_2 = self._compute_levels(event, direction)
             confidence = trend.trend_score

@@ -90,6 +90,34 @@ class FilterConfig:
 
 
 # ---------------------------------------------------------------------------
+# Previous day closing condition parameters
+# ---------------------------------------------------------------------------
+
+@dataclass
+class PrevDayConditionConfig:
+    # Master toggle — set ENABLE_PREV_DAY_CONDITION=false to bypass this filter
+    enable: bool = field(default_factory=lambda: _bool("ENABLE_PREV_DAY_CONDITION", True))
+
+    # Volume must be at least this multiple of the 20-day avg to count as a "surge"
+    # e.g. 1.5 → prev day volume ≥ 1.5× average
+    volume_surge_ratio: float = field(
+        default_factory=lambda: _float("PREV_DAY_VOLUME_SURGE_RATIO", 1.5)
+    )
+
+    # Bullish (LONG) condition: close must be in the TOP fraction of the day's range.
+    # e.g. 0.70 → close ≥ low + 70% of (high − low)
+    close_near_high_threshold: float = field(
+        default_factory=lambda: _float("PREV_DAY_CLOSE_NEAR_HIGH_THRESHOLD", 0.70)
+    )
+
+    # Bearish (SHORT) / distribution condition: close must be in the BOTTOM fraction.
+    # e.g. 0.30 → close ≤ low + 30% of (high − low)
+    close_near_low_threshold: float = field(
+        default_factory=lambda: _float("PREV_DAY_CLOSE_NEAR_LOW_THRESHOLD", 0.30)
+    )
+
+
+# ---------------------------------------------------------------------------
 # Operational settings
 # ---------------------------------------------------------------------------
 
@@ -113,6 +141,7 @@ class Settings:
     risk: RiskConfig = field(default_factory=RiskConfig)
     filters: FilterConfig = field(default_factory=FilterConfig)
     ops: OperationalConfig = field(default_factory=OperationalConfig)
+    prev_day: PrevDayConditionConfig = field(default_factory=PrevDayConditionConfig)
 
 
 # Singleton — import this everywhere
