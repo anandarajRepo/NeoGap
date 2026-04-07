@@ -7,6 +7,7 @@ Usage
   python main.py run           Start the gap trading strategy
   python main.py scan          One-shot gap scan (no orders placed)
   python main.py status        Show today's positions and metrics
+  python main.py stop          Gracefully stop a running strategy (closes open positions)
 """
 
 from __future__ import annotations
@@ -124,6 +125,14 @@ def cmd_scan() -> None:
     print()
 
 
+def cmd_stop() -> None:
+    """Signal a running strategy to shut down gracefully after closing open positions."""
+    from pathlib import Path
+    from strategy.gap_strategy import STOP_FLAG_FILE
+    STOP_FLAG_FILE.touch()
+    print(f"Stop flag written to {STOP_FLAG_FILE}. The strategy will exit after the next poll cycle.")
+
+
 def cmd_status() -> None:
     """Print today's log tail for a quick status check."""
     import os
@@ -147,6 +156,7 @@ _COMMANDS = {
     "run": cmd_run,
     "scan": cmd_scan,
     "status": cmd_status,
+    "stop": cmd_stop,
 }
 
 if __name__ == "__main__":

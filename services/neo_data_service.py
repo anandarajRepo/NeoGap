@@ -76,15 +76,16 @@ class NeoDataService:
         scrip = to_neo_format(symbol)
         logger.debug("Fetching %d-day OHLC for %s", days, symbol)
 
-        try:
-            resp = _retry(
-                self._client.quotes,
-                instrument_tokens=[{
-                    "instrument_token": scrip["trading_symbol"],
-                    "exchange_segment": scrip["exchange_segment"],
-                }],
-                quote_type="ohlc",
+        base_url = getattr(self._client, "base_url", None)
+        if not base_url:
+            logger.error(
+                "historical_candles skipped for %s: client.base_url is not set "
+                "(re-authenticate with `python main.py auth`)",
+                symbol,
             )
+            return []
+
+        try:
             # neo_api_client historical candles endpoint
             raw_bars = _retry(
                 self._client.historical_candles,
