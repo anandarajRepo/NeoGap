@@ -17,6 +17,8 @@ import time
 from datetime import datetime, timedelta
 from typing import Optional
 
+import requests
+
 from config.settings import settings
 from config.symbols import to_neo_format
 from models.trading_models import DayOHLC, LiveQuote
@@ -67,6 +69,9 @@ class NeoDataService:
         """
         Fetch `days` trading days of daily OHLC for *symbol*.
 
+        Uses the Kotak Neo chart history REST endpoint directly because
+        neo_api_client.NeoAPI does not expose a historical_candles method.
+
         Returns a list sorted oldest → newest.
         """
         to_date = datetime.now()
@@ -79,42 +84,97 @@ class NeoDataService:
         base_url = getattr(self._client, "base_url", None)
         if not base_url:
             logger.error(
-                "historical_candles skipped for %s: client.base_url is not set "
+                "historical_ohlc skipped for %s: client.base_url is not set "
                 "(re-authenticate with `python main.py auth`)",
                 symbol,
             )
             return []
 
+        access_token = getattr(self._client, "access_token", None)
+        sid = getattr(self._client, "sid", None)
+
+        url = f"{base_url.rstrip('/')}/charts/1.0/chart/history"
+        params = {
+            "exchange": scrip["exchange_segment"],
+            "tradingSymbol": scrip["trading_symbol"],
+            "from": int(from_date.timestamp()),
+            "to": int(to_date.timestamp()),
+            "resolution": "1D",
+        }
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "sid": sid or "",
+            "Content-Type": "application/json",
+        }
+
         try:
-            # neo_api_client historical candles endpoint
-            raw_bars = _retry(
-                self._client.historical_candles,
-                instrument_token=scrip["trading_symbol"],
-                exchange=scrip["exchange_segment"],
-                to_date=to_date.strftime("%d-%m-%Y"),
-                from_date=from_date.strftime("%d-%m-%Y"),
-                time_interval="1",  # "1" = daily
-                fetch_ohlcv_data=1,
-            )
+            def _fetch():
+                resp = requests.get(url, params=params, headers=headers, timeout=30)
+                resp.raise_for_status()
+                return resp.json()
+
+            raw = _retry(_fetch)
         except Exception as exc:
             logger.error("historical_candles failed for %s: %s", symbol, exc)
             return []
 
+        # The chart/history endpoint returns parallel arrays:
+        # { "t": [timestamps], "o": [opens], "h": [highs], "l": [lows],
+        #   "c": [closes], "v": [volumes], "s": "ok" }
         bars = []
-        raw_list = raw_bars if isinstance(raw_bars, list) else (raw_bars or {}).get("data", [])
-        for bar in raw_list:
-            try:
-                bars.append(DayOHLC(
-                    symbol=symbol,
-                    date=datetime.strptime(bar.get("datetime") or bar.get("date", ""), "%d-%m-%Y"),
-                    open=float(bar.get("open", 0)),
-                    high=float(bar.get("high", 0)),
-                    low=float(bar.get("low", 0)),
-                    close=float(bar.get("close", 0)),
-                    volume=int(bar.get("volume", 0)),
-                ))
-            except Exception:
-                continue
+        data = raw if isinstance(raw, dict) else {}
+        if data.get("s") != "ok" and "data" not in data:
+            # Fallback: try a list-of-dicts response shape
+            raw_list = raw if isinstance(raw, list) else []
+            for bar in raw_list:
+                try:
+                    bars.append(DayOHLC(
+                        symbol=symbol,
+                        date=datetime.strptime(bar.get("datetime") or bar.get("date", ""), "%d-%m-%Y"),
+                        open=float(bar.get("open", 0)),
+                        high=float(bar.get("high", 0)),
+                        low=float(bar.get("low", 0)),
+                        close=float(bar.get("close", 0)),
+                        volume=int(bar.get("volume", 0)),
+                    ))
+                except Exception:
+                    continue
+        elif "data" in data:
+            # Some Neo API versions wrap in a "data" key
+            for bar in (data["data"] or []):
+                try:
+                    bars.append(DayOHLC(
+                        symbol=symbol,
+                        date=datetime.strptime(bar.get("datetime") or bar.get("date", ""), "%d-%m-%Y"),
+                        open=float(bar.get("open", 0)),
+                        high=float(bar.get("high", 0)),
+                        low=float(bar.get("low", 0)),
+                        close=float(bar.get("close", 0)),
+                        volume=int(bar.get("volume", 0)),
+                    ))
+                except Exception:
+                    continue
+        else:
+            # Parallel-arrays format
+            timestamps = data.get("t", [])
+            opens = data.get("o", [])
+            highs = data.get("h", [])
+            lows = data.get("l", [])
+            closes = data.get("c", [])
+            volumes = data.get("v", [])
+            for i, ts in enumerate(timestamps):
+                try:
+                    bars.append(DayOHLC(
+                        symbol=symbol,
+                        date=datetime.fromtimestamp(int(ts)),
+                        open=float(opens[i]),
+                        high=float(highs[i]),
+                        low=float(lows[i]),
+                        close=float(closes[i]),
+                        volume=int(volumes[i]) if i < len(volumes) else 0,
+                    ))
+                except Exception:
+                    continue
 
         bars.sort(key=lambda b: b.date)
         return bars[-days:]  # return at most `days` bars
