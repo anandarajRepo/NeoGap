@@ -62,7 +62,7 @@ def cmd_run() -> None:
 
 def cmd_scan() -> None:
     """
-    One-shot gap scan: detect today's gaps and print trend analysis.
+    One-shot gap scan: detect today's gaps using live market quotes.
     No orders are placed regardless of DRY_RUN setting.
     """
     import os
@@ -71,55 +71,45 @@ def cmd_scan() -> None:
     from utils.auth_helper import get_neo_client
     from services.neo_data_service import NeoDataService
     from services.gap_detection_service import GapDetectionService
-    from services.gap_trend_service import GapTrendService
     from config.symbols import get_all_symbols
 
     client = get_neo_client()
     data_svc = NeoDataService(client)
     gap_detect = GapDetectionService()
-    gap_trend = GapTrendService()
     symbols = get_all_symbols()
 
     print("\n=== NeoGap One-Shot Scanner ===\n")
 
-    # Fetch prev closes
-    prev_closes: dict[str, float] = {}
-    for sym in symbols:
-        pc = data_svc.get_prev_close(sym)
-        if pc:
-            prev_closes[sym] = pc
-
-    # Live quotes
-    live_quotes = data_svc.get_live_quotes(list(prev_closes.keys()))
+    # Fetch live quotes (prev_close is included in the quote response)
+    live_quotes = data_svc.get_live_quotes(symbols)
+    prev_closes = {
+        sym: quote.prev_close
+        for sym, quote in live_quotes.items()
+        if quote.prev_close > 0
+    }
     gap_events = gap_detect.detect_gaps(prev_closes, live_quotes)
 
     if not gap_events:
         print("No qualifying gaps detected today.")
         return
 
-    print(f"{'Symbol':<12} {'Direction':<10} {'Gap%':>6}  {'Cont%':>6}  {'Rev%':>6}  {'Score':>6}  {'Action'}")
-    print("-" * 70)
+    print(f"{'Symbol':<12} {'Direction':<10} {'Gap%':>6}  {'LTP':>8}  {'PrevClose':>10}  {'Action'}")
+    print("-" * 65)
 
     for event in gap_events:
-        bars = data_svc.get_historical_ohlc(event.symbol, days=settings.gap.lookback_days + 5)
-        if len(bars) < 2:
-            continue
-        trend = gap_trend.analyse(event.symbol, bars, event.gap_direction)
-        if not gap_trend.has_sufficient_data(trend):
-            action = "SKIP (insufficient data)"
-        elif gap_trend.is_continuation_signal(trend):
-            action = "TRADE → " + ("BUY" if event.gap_direction.value == "GAP_UP" else "SELL")
-        elif gap_trend.is_reversal_signal(trend):
-            action = "TRADE → " + ("SELL" if event.gap_direction.value == "GAP_UP" else "BUY")
+        if event.gap_direction.value == "GAP_UP":
+            action = "TRADE → BUY"
         else:
-            action = "SKIP (no clear edge)"
+            action = "TRADE → SELL"
+
+        quote = live_quotes.get(event.symbol)
+        ltp = quote.ltp if quote else event.open_price
 
         print(
             f"{event.symbol:<12} {event.gap_direction.value:<10} "
             f"{event.gap_pct:>6.2f}%  "
-            f"{trend.continuation_rate * 100:>5.1f}%  "
-            f"{trend.reversal_rate * 100:>5.1f}%  "
-            f"{trend.trend_score:>6.1f}  {action}"
+            f"{ltp:>8.2f}  "
+            f"{event.prev_close:>10.2f}  {action}"
         )
 
     print()
