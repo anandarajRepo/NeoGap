@@ -26,6 +26,11 @@ from utils.logger import get_logger
 
 logger = get_logger("neo_data_service", settings.ops.log_level, settings.ops.log_file)
 
+# Chart history lives on the Kotak Neo gateway, not on the per-session trading
+# server (e.g. e22.kotaksecurities.com) returned by client.base_url after login.
+_CHART_BASE_URL = "https://gw-napi.kotaksecurities.com"
+_NEO_FIN_KEY = "neotradeapi"
+
 # Retry parameters
 _MAX_RETRIES = 4
 _BASE_BACKOFF = 2  # seconds
@@ -81,19 +86,21 @@ class NeoDataService:
         scrip = to_neo_format(symbol)
         logger.debug("Fetching %d-day OHLC for %s", days, symbol)
 
-        base_url = getattr(self._client, "base_url", None)
-        if not base_url:
+        access_token = getattr(self._client, "access_token", None)
+        if not access_token:
             logger.error(
-                "historical_ohlc skipped for %s: client.base_url is not set "
+                "historical_ohlc skipped for %s: client.access_token is not set "
                 "(re-authenticate with `python main.py auth`)",
                 symbol,
             )
             return []
 
-        access_token = getattr(self._client, "access_token", None)
         sid = getattr(self._client, "sid", None)
 
-        url = f"{base_url.rstrip('/')}/charts/1.0/chart/history"
+        # Always use the Kotak Neo gateway for chart history — the per-session
+        # trading server (client.base_url, e.g. e22.kotaksecurities.com) does
+        # not host this endpoint and returns 404.
+        url = f"{_CHART_BASE_URL}/charts/1.0/chart/history"
         params = {
             "exchange": scrip["exchange_segment"],
             "tradingSymbol": scrip["trading_symbol"],
@@ -104,6 +111,7 @@ class NeoDataService:
         headers = {
             "Authorization": f"Bearer {access_token}",
             "sid": sid or "",
+            "neo-fin-key": _NEO_FIN_KEY,
             "Content-Type": "application/json",
         }
 
