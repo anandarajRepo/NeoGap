@@ -3,17 +3,16 @@ NeoGap — Gap Strategy State Machine.
 
 Flow
 ----
-1. PRE_OPEN (8:55–9:15): Fetch previous closes for all watchlist symbols.
-2. GAP_SCAN  (9:15–9:20): Detect gap-up / gap-down stocks at market open.
-3. TREND_ANALYSIS       : For each gap stock, analyse historical gap trend.
-4. SIGNAL_FILTER        : Filter by trend strength and direction alignment.
-5. CONFIRMATION (wait N minutes after open): Confirm gap is still holding.
-6. ORDER_ENTRY          : Place entry order + stop-loss for top signals.
-7. POSITION_MONITOR     : Poll live quotes; manage trailing stops, targets, EOD exit.
+1. PRE_OPEN (8:55–9:15): Transition to gap scan state.
+2. GAP_SCAN  (9:15–9:20): Detect gap-up / gap-down stocks using live quotes
+                          (prev_close is sourced from the live quote response).
+3. SIGNAL_FILTER        : Generate signals from detected gaps (continuation bias).
+4. CONFIRMATION (wait N minutes after open): Confirm gap is still holding.
+5. ORDER_ENTRY          : Place entry order + stop-loss for top signals.
+6. POSITION_MONITOR     : Poll live quotes; manage trailing stops, targets, EOD exit.
 
 State diagram:
-  IDLE → PRE_OPEN → GAP_SCAN → TREND_ANALYSIS
-       → SIGNAL_FILTER → CONFIRMATION → TRADING → CLOSING → IDLE
+  IDLE → PRE_OPEN → GAP_SCAN → CONFIRMATION → TRADING → CLOSING → IDLE
 
 Risk rules (enforced every loop tick):
   - Max concurrent open positions = MAX_POSITIONS
@@ -35,12 +34,10 @@ STOP_FLAG_FILE = Path(".neogap_stop")
 from config.settings import settings
 from config.symbols import get_all_symbols
 from models.trading_models import (
-    DayOHLC,
     ExitReason,
     GapDirection,
     GapEvent,
     GapSignal,
-    GapTrend,
     OrderSide,
     Position,
     PositionStatus,
@@ -50,8 +47,6 @@ from models.trading_models import (
     TradeResult,
 )
 from services.gap_detection_service import GapDetectionService
-from services.gap_trend_service import GapTrendService
-from services.prev_day_condition_service import PrevDayConditionService
 from services.market_timing_service import (
     is_end_of_day,
     is_gap_scan_window,
@@ -72,7 +67,6 @@ class StrategyState(Enum):
     IDLE = auto()
     PRE_OPEN = auto()
     GAP_SCAN = auto()
-    TREND_ANALYSIS = auto()
     CONFIRMATION = auto()
     TRADING = auto()
     CLOSING = auto()
@@ -87,16 +81,10 @@ class GapStrategy:
         self._client = neo_client
         self._data_svc = NeoDataService(neo_client)
         self._gap_detect = GapDetectionService()
-        self._gap_trend = GapTrendService()
-        self._prev_day_svc = PrevDayConditionService()
         self._order_mgr = OrderManager(neo_client)
 
         self._state = StrategyState.IDLE
-        self._prev_closes: dict[str, float] = {}
-        self._avg_volumes: dict[str, int] = {}
-        self._prev_day_bars: dict[str, DayOHLC] = {}   # full previous-day OHLC bar per symbol
         self._gap_events: list[GapEvent] = []
-        self._gap_trends: dict[str, GapTrend] = {}
         self._pending_confirmation: list[GapEvent] = []  # awaiting mini-ORB confirm
         self._signals: list[GapSignal] = []
         self._positions: dict[str, Position] = {}  # symbol → Position
@@ -152,10 +140,7 @@ class GapStrategy:
                 await self._gap_scan_phase()
             elif is_market_open():
                 # Gap scan window passed without scanning — move ahead
-                self._state = StrategyState.TREND_ANALYSIS
-
-        elif self._state == StrategyState.TREND_ANALYSIS:
-            await self._trend_analysis_phase()
+                self._state = StrategyState.CONFIRMATION
 
         elif self._state == StrategyState.CONFIRMATION:
             await self._confirmation_phase()
@@ -167,51 +152,15 @@ class GapStrategy:
             await self._closing_phase()
 
     # ------------------------------------------------------------------
-    # Phase 1: Pre-open — fetch historical data
+    # Phase 1: Pre-open — wait for gap scan window
     # ------------------------------------------------------------------
 
     async def _pre_open_phase(self) -> None:
-        logger.info("[PRE_OPEN] Fetching previous closes and 20-day avg volumes…")
-        loop = asyncio.get_event_loop()
-
-        prev_closes, avg_volumes, prev_day_bars = await loop.run_in_executor(
-            None, self._fetch_pre_open_data
-        )
-        self._prev_closes = prev_closes
-        self._avg_volumes = avg_volumes
-        self._prev_day_bars = prev_day_bars
-        logger.info(
-            "[PRE_OPEN] Ready: %d symbols with prev_close data "
-            "(prev_day_condition filter: %s)",
-            len(prev_closes),
-            "ON" if self._prev_day_svc.is_enabled() else "OFF",
-        )
+        logger.info("[PRE_OPEN] Ready — waiting for gap scan window…")
         self._state = StrategyState.GAP_SCAN
 
-    def _fetch_pre_open_data(
-        self,
-    ) -> tuple[dict[str, float], dict[str, int], dict[str, DayOHLC]]:
-        prev_closes: dict[str, float] = {}
-        avg_volumes: dict[str, int] = {}
-        prev_day_bars: dict[str, DayOHLC] = {}
-
-        for symbol in self._symbols:
-            bars = self._data_svc.get_historical_ohlc(symbol, days=25)
-            if len(bars) >= 2:
-                prev_closes[symbol] = bars[-2].close
-                prev_day_bars[symbol] = bars[-2]   # full OHLC bar for prev day condition
-                if len(bars) >= 20:
-                    avg_volumes[symbol] = int(
-                        sum(b.volume for b in bars[-20:]) / 20
-                    )
-            elif len(bars) == 1:
-                prev_closes[symbol] = bars[0].close
-                prev_day_bars[symbol] = bars[0]
-
-        return prev_closes, avg_volumes, prev_day_bars
-
     # ------------------------------------------------------------------
-    # Phase 2: Gap scan — detect gaps at open
+    # Phase 2: Gap scan — detect gaps using live quotes (incl. prev_close)
     # ------------------------------------------------------------------
 
     async def _gap_scan_phase(self) -> None:
@@ -224,115 +173,46 @@ class GapStrategy:
         logger.info("[GAP_SCAN] Found %d gap stocks", len(self._gap_events))
 
         if self._gap_events:
-            self._state = StrategyState.TREND_ANALYSIS
+            await self._generate_signals()
+            self._state = StrategyState.CONFIRMATION
         else:
             logger.info("[GAP_SCAN] No qualifying gaps today — moving to TRADING (monitor only)")
             self._state = StrategyState.TRADING
 
     def _scan_gaps(self) -> list[GapEvent]:
-        live_quotes = self._data_svc.get_live_quotes(list(self._prev_closes.keys()))
-        return self._gap_detect.detect_gaps(
-            self._prev_closes, live_quotes, self._avg_volumes
-        )
+        live_quotes = self._data_svc.get_live_quotes(self._symbols)
+        # Build prev_closes from the prev_close field in each live quote
+        prev_closes = {
+            sym: quote.prev_close
+            for sym, quote in live_quotes.items()
+            if quote.prev_close > 0
+        }
+        return self._gap_detect.detect_gaps(prev_closes, live_quotes)
 
     # ------------------------------------------------------------------
-    # Phase 3: Trend analysis — analyse historical gaps per stock
-    # ------------------------------------------------------------------
-
-    async def _trend_analysis_phase(self) -> None:
-        logger.info("[TREND_ANALYSIS] Analysing gap trends for %d stocks…", len(self._gap_events))
-        loop = asyncio.get_event_loop()
-        self._gap_trends = await loop.run_in_executor(None, self._analyse_trends)
-
-        await self._generate_signals()
-        self._state = StrategyState.CONFIRMATION
-
-    def _analyse_trends(self) -> dict[str, GapTrend]:
-        trends: dict[str, GapTrend] = {}
-        for event in self._gap_events:
-            bars = self._data_svc.get_historical_ohlc(
-                event.symbol, days=settings.gap.lookback_days + 5
-            )
-            if len(bars) < 2:
-                logger.warning("%s: insufficient historical data for trend analysis", event.symbol)
-                continue
-            trend = self._gap_trend.analyse(event.symbol, bars, event.gap_direction)
-            trends[event.symbol] = trend
-        return trends
-
-    # ------------------------------------------------------------------
-    # Signal generation
+    # Signal generation — continuation bias (no historical trend needed)
     # ------------------------------------------------------------------
 
     async def _generate_signals(self) -> None:
         signals: list[GapSignal] = []
 
         for event in self._gap_events:
-            trend = self._gap_trends.get(event.symbol)
-            if trend is None:
-                continue
-
-            if not self._gap_trend.has_sufficient_data(trend):
-                logger.info(
-                    "%s: only %d historical gaps — insufficient (need %d)",
-                    event.symbol, trend.total_gaps, settings.gap.min_gap_occurrences,
-                )
-                continue
-
-            # Determine signal direction and basis
-            if self._gap_trend.is_continuation_signal(trend):
-                # Trade WITH the gap direction
-                if event.gap_direction == GapDirection.UP:
-                    direction = SignalDirection.BUY
-                else:
-                    direction = SignalDirection.SELL
-                basis = SignalBasis.CONTINUATION
-
-            elif self._gap_trend.is_reversal_signal(trend):
-                # Trade AGAINST the gap direction (fade the gap)
-                if event.gap_direction == GapDirection.UP:
-                    direction = SignalDirection.SELL
-                else:
-                    direction = SignalDirection.BUY
-                basis = SignalBasis.REVERSAL
-
+            # Trade with gap direction (continuation bias)
+            if event.gap_direction == GapDirection.UP:
+                direction = SignalDirection.BUY
             else:
-                logger.info(
-                    "%s: no clear trend (cont=%.1f%% rev=%.1f%%) — skipping",
-                    event.symbol,
-                    trend.continuation_rate * 100,
-                    trend.reversal_rate * 100,
-                )
-                continue
+                direction = SignalDirection.SELL
 
-            # ----------------------------------------------------------
-            # Previous day closing condition filter
-            # Bullish  (BUY) : volume surge + close near day high
-            # Bearish (SELL) : high volume + close fails to hold highs
-            # ----------------------------------------------------------
-            if self._prev_day_svc.is_enabled():
-                prev_bar = self._prev_day_bars.get(event.symbol)
-                avg_vol = self._avg_volumes.get(event.symbol, 0)
-                if prev_bar is None:
-                    logger.info(
-                        "%s: no prev-day bar available — skipping prev-day condition check",
-                        event.symbol,
-                    )
-                elif not self._prev_day_svc.check(event.symbol, prev_bar, avg_vol, direction):
-                    logger.info(
-                        "%s: dropped — prev-day closing condition not met for %s signal",
-                        event.symbol, direction.value,
-                    )
-                    continue
+            basis = SignalBasis.CONTINUATION
+            # Confidence scales with gap size, capped at 100
+            confidence = min(event.gap_pct * 10, 100.0)
 
             entry_price, stop_loss, target_1, target_2 = self._compute_levels(event, direction)
-            confidence = trend.trend_score
 
             signal = GapSignal(
                 symbol=event.symbol,
                 generated_at=now_ist(),
                 gap_event=event,
-                gap_trend=trend,
                 signal_direction=direction,
                 signal_basis=basis,
                 confidence_score=confidence,
@@ -343,10 +223,10 @@ class GapStrategy:
             )
             signals.append(signal)
             logger.info(
-                "SIGNAL | %s | %s (%s) | conf=%.0f | entry=%.2f sl=%.2f t1=%.2f t2=%.2f",
+                "SIGNAL | %s | %s | gap=%.2f%% | conf=%.0f | entry=%.2f sl=%.2f t1=%.2f t2=%.2f",
                 event.symbol,
                 direction.value,
-                basis.value,
+                event.gap_pct,
                 confidence,
                 entry_price, stop_loss, target_1, target_2,
             )
@@ -380,7 +260,7 @@ class GapStrategy:
         return round(entry, 2), round(stop_loss, 2), round(target_1, 2), round(target_2, 2)
 
     # ------------------------------------------------------------------
-    # Phase 4: Confirmation — wait N minutes, verify gap is holding
+    # Phase 3: Confirmation — wait N minutes, verify gap is holding
     # ------------------------------------------------------------------
 
     async def _confirmation_phase(self) -> None:
@@ -413,7 +293,7 @@ class GapStrategy:
         self._state = StrategyState.TRADING
 
     # ------------------------------------------------------------------
-    # Phase 5: Trading — enter positions, manage open positions
+    # Phase 4: Trading — enter positions, manage open positions
     # ------------------------------------------------------------------
 
     async def _trading_phase(self) -> None:
@@ -554,7 +434,7 @@ class GapStrategy:
         )
 
     # ------------------------------------------------------------------
-    # Phase 6: Closing — EOD square-off all positions
+    # Phase 5: Closing — EOD square-off all positions
     # ------------------------------------------------------------------
 
     async def _closing_phase(self) -> None:

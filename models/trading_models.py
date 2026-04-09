@@ -157,7 +157,6 @@ class GapSignal:
     symbol: str
     generated_at: datetime
     gap_event: GapEvent
-    gap_trend: GapTrend
     signal_direction: SignalDirection   # BUY or SELL
     signal_basis: SignalBasis           # CONTINUATION or REVERSAL
     confidence_score: float             # 0–100
@@ -165,6 +164,7 @@ class GapSignal:
     stop_loss: float
     target_1: float
     target_2: float
+    gap_trend: Optional[GapTrend] = None
 
 
 # ---------------------------------------------------------------------------
@@ -240,6 +240,7 @@ class LiveQuote:
     bid: float = 0.0
     ask: float = 0.0
     volume: int = 0
+    prev_close: float = 0.0
     timestamp: Optional[datetime] = None
 
 
